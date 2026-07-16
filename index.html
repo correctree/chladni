@@ -33,7 +33,15 @@
     #status { margin-top: 7px; font-size: 12px; line-height: 1.55; opacity: .78; }
     #meter { margin-top: 10px; height: 4px; border-radius: 99px; overflow: hidden; background: rgba(255,255,255,.13); }
     #meter > i { display:block; height:100%; width:0%; background: white; transition: width .08s linear; }
-    #readout { display:flex; gap:12px; margin-top:9px; font-size:11px; opacity:.74; }
+    #readout { display:flex; gap:12px; margin-top:9px; font-size:11px; opacity:.74; flex-wrap:wrap; }
+    .control { margin-top: 12px; }
+    .control label {
+      display:flex; justify-content:space-between; gap:12px;
+      margin-bottom:6px; font-size:11px; opacity:.78;
+    }
+    input[type="range"] { width:100%; accent-color:white; }
+    .buttonRow { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:12px; }
+    .buttonRow button { margin-top:0; }
     button {
       margin-top: 12px; width: 100%; min-height: 42px; border: 0; border-radius: 12px;
       background: rgba(255,255,255,.92); color:#08090b; font-weight:700; font-size:14px;
@@ -58,7 +66,22 @@
     <div id="status">「開始」を押し、カメラを許可してください。</div>
     <div id="meter"><i></i></div>
     <div id="readout"><span id="hz">— Hz</span><span id="mode">mode —</span><span id="gesture">待機</span></div>
+
+    <div class="control">
+      <label for="particleSize"><span>粒子サイズ</span><span id="particleSizeValue">1.2</span></label>
+      <input id="particleSize" type="range" min="0.5" max="4.0" value="1.2" step="0.1">
+    </div>
+
+    <div class="control">
+      <label for="collapsePower"><span>崩壊の強さ</span><span id="collapsePowerValue">1.0</span></label>
+      <input id="collapsePower" type="range" min="0.4" max="2.5" value="1.35" step="0.05">
+    </div>
+
     <button id="start">開始</button>
+    <div id="runningButtons" class="buttonRow hidden">
+      <button id="resetParticles">粒子を再配置</button>
+      <button id="restart">再起動</button>
+    </div>
   </section>
 
   <div id="help">
@@ -85,6 +108,13 @@
     const modeEl = document.querySelector("#mode");
     const gestureEl = document.querySelector("#gesture");
     const meterFill = document.querySelector("#meter i");
+    const particleSizeInput = document.querySelector("#particleSize");
+    const particleSizeValue = document.querySelector("#particleSizeValue");
+    const collapsePowerInput = document.querySelector("#collapsePower");
+    const collapsePowerValue = document.querySelector("#collapsePowerValue");
+    const runningButtons = document.querySelector("#runningButtons");
+    const resetParticlesBtn = document.querySelector("#resetParticles");
+    const restartBtn = document.querySelector("#restart");
 
     let W = 0, H = 0, DPR = 1;
     let handLandmarker = null;
@@ -95,6 +125,13 @@
     let smoothPinch = 1;
     let smoothOpen = 0;
     let gesture = "none";
+    let previousGesture = "none";
+    let handX = .5;
+    let handY = .5;
+    let collapsePulse = 0;
+    let collapseAngle = 0;
+    let particleSize = Number(particleSizeInput.value);
+    let collapsePower = Number(collapsePowerInput.value);
     let audioCtx, oscillator, gain, filter;
     let lastFrame = performance.now();
 
@@ -122,6 +159,7 @@
     }
 
     function setupAudio() {
+      if (audioCtx && audioCtx.state !== "closed") return;
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       oscillator = audioCtx.createOscillator();
       gain = audioCtx.createGain();
@@ -167,10 +205,17 @@
       return { gx, gy };
     }
 
+    function triggerCollapse() {
+      collapsePulse = 1;
+      collapseAngle = Math.random() * Math.PI * 2;
+    }
+
     function updateParticles(dt, m, n) {
       const form = gesture === "pinch";
       const scatter = gesture === "open";
-      const centerX = W * .5, centerY = H * .5;
+      const originX = handX * W;
+      const originY = handY * H;
+      collapsePulse *= Math.pow(.90, dt * 60);
 
       for (const p of particles) {
         if (form) {
@@ -181,26 +226,41 @@
           p.vx += (Math.random() - .5) * .022;
           p.vy += (Math.random() - .5) * .022;
         } else if (scatter) {
-          const dx = p.x - centerX, dy = p.y - centerY;
-          const len = Math.hypot(dx,dy) + 1;
-          const burst = 1.9 * dt * 60;
-          p.vx += dx / len * burst + (Math.random() - .5) * .8;
-          p.vy += dy / len * burst + (Math.random() - .5) * .8;
+          const dx = p.x - originX;
+          const dy = p.y - originY;
+          const len = Math.hypot(dx, dy) + 1;
+          const nx = dx / len;
+          const ny = dy / len;
+          const tx = -ny;
+          const ty = nx;
+
+          const distanceFalloff = 1 / (1 + len * .0016);
+          const wave = Math.sin(len * .035 - performance.now() * .016 + p.seed);
+          const pulse = collapsePulse * 10.5 * collapsePower * distanceFalloff;
+          const continuous = 1.6 * collapsePower * dt * 60 * distanceFalloff;
+          const swirl = (2.4 + wave * 1.7) * collapsePower * dt * 60 * distanceFalloff;
+
+          p.vx += nx * (pulse + continuous) + tx * swirl;
+          p.vy += ny * (pulse + continuous) + ty * swirl;
+          p.vx += Math.cos(collapseAngle + p.seed) * collapsePulse * 1.7 * collapsePower;
+          p.vy += Math.sin(collapseAngle + p.seed) * collapsePulse * 1.7 * collapsePower;
+          p.vx += (Math.random() - .5) * 1.1 * collapsePower;
+          p.vy += (Math.random() - .5) * 1.1 * collapsePower;
         } else {
           p.vx += (Math.random() - .5) * .035;
           p.vy += (Math.random() - .5) * .035;
         }
 
-        const damping = form ? .91 : .965;
+        const damping = form ? .91 : scatter ? .982 : .965;
         p.vx *= Math.pow(damping, dt * 60);
         p.vy *= Math.pow(damping, dt * 60);
         p.x += p.vx * dt * 60;
         p.y += p.vy * dt * 60;
 
-        if (p.x < 0) { p.x = 0; p.vx *= -.5; }
-        if (p.x > W) { p.x = W; p.vx *= -.5; }
-        if (p.y < 0) { p.y = 0; p.vy *= -.5; }
-        if (p.y > H) { p.y = H; p.vy *= -.5; }
+        if (p.x < 0) { p.x = 0; p.vx *= -.72; }
+        if (p.x > W) { p.x = W; p.vx *= -.72; }
+        if (p.y < 0) { p.y = 0; p.vy *= -.72; }
+        if (p.y > H) { p.y = H; p.vy *= -.72; }
       }
     }
 
@@ -218,15 +278,19 @@
       ctx.fillStyle = `rgba(235,245,255,${alpha})`;
       for (const p of particles) {
         const speed = Math.hypot(p.vx,p.vy);
-        const size = gesture === "pinch" ? 1.05 : Math.min(1.7, .7 + speed * .12);
-        ctx.fillRect(p.x, p.y, size, size);
+        const motionScale = gesture === "open" ? Math.min(2.2, 1 + speed * .035) : 1;
+        const size = particleSize * motionScale;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, Math.max(.25, size * .5), 0, Math.PI * 2);
+        ctx.fill();
       }
       ctx.globalCompositeOperation = "source-over";
 
       if (gesture !== "none") {
+        const x = handX * W;
         const y = smoothY * H;
         ctx.beginPath();
-        ctx.arc(W * .5, y, 8 + (1-smoothPinch)*15, 0, Math.PI*2);
+        ctx.arc(x, y, 8 + (1-smoothPinch)*15 + collapsePulse * 26, 0, Math.PI*2);
         ctx.strokeStyle = gesture === "pinch" ? "rgba(255,255,255,.9)" : "rgba(255,255,255,.28)";
         ctx.lineWidth = 1;
         ctx.stroke();
@@ -277,7 +341,9 @@
         await video.play();
 
         running = true;
+        lastFrame = performance.now();
         startBtn.classList.add("hidden");
+        runningButtons.classList.remove("hidden");
         statusEl.textContent = "手を画面中央に映してください。";
         requestAnimationFrame(loop);
       } catch (err) {
@@ -303,6 +369,8 @@
       }
 
       const metrics = handMetrics(result.landmarks[0]);
+      handX += ((1 - metrics.palm.x) - handX) * .18;
+      handY += (metrics.palm.y - handY) * .18;
       smoothY += (metrics.palm.y - smoothY) * .16;
       smoothPinch += (metrics.pinchRatio - smoothPinch) * .22;
       smoothOpen += (metrics.openScore - smoothOpen) * .18;
@@ -310,6 +378,9 @@
       if (smoothPinch < .48) gesture = "pinch";
       else if (smoothOpen > 2.35 && smoothPinch > .72) gesture = "open";
       else gesture = "hover";
+
+      if (gesture === "open" && previousGesture !== "open") triggerCollapse();
+      previousGesture = gesture;
     }
 
     function loop(now) {
@@ -345,6 +416,47 @@
       requestAnimationFrame(loop);
     }
 
+    async function restartExperience() {
+      running = false;
+
+      if (video.srcObject) {
+        for (const track of video.srcObject.getTracks()) track.stop();
+        video.srcObject = null;
+      }
+
+      if (audioCtx && audioCtx.state !== "closed") {
+        await audioCtx.close();
+      }
+
+      audioCtx = oscillator = gain = filter = null;
+      lastVideoTime = -1;
+      gesture = previousGesture = "none";
+      smoothPinch = 1;
+      smoothOpen = 0;
+      smoothY = .5;
+      handX = handY = .5;
+      collapsePulse = 0;
+      resetParticles();
+
+      runningButtons.classList.add("hidden");
+      startBtn.classList.remove("hidden");
+      startBtn.disabled = false;
+      startBtn.textContent = "再生";
+      statusEl.textContent = "「再生」を押すと、もう一度カメラと音を開始します。";
+    }
+
+    particleSizeInput.addEventListener("input", () => {
+      particleSize = Number(particleSizeInput.value);
+      particleSizeValue.textContent = particleSize.toFixed(1);
+    });
+
+    collapsePowerInput.addEventListener("input", () => {
+      collapsePower = Number(collapsePowerInput.value);
+      collapsePowerValue.textContent = collapsePower.toFixed(2);
+    });
+
+    resetParticlesBtn.addEventListener("click", resetParticles);
+    restartBtn.addEventListener("click", restartExperience);
     startBtn.addEventListener("click", start);
     addEventListener("resize", resize);
     resize();
