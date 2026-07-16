@@ -93,7 +93,7 @@
   <div id="help">
     手を上下：薄板の固有モードを選択<br>
     ピンチ：表示中の周波数を再生・図形形成<br>
-    手を開く：3秒間崩壊→自動リセット
+    手を開く：3秒間崩壊→自動リセット<br>粒子移動：軌跡を描画
   </div>
 
   <script type="module">
@@ -147,6 +147,9 @@
     let lastFrame = performance.now();
 
     const PARTICLE_COUNT = matchMedia("(max-width: 700px)").matches ? 4200 : 7600;
+    const MAX_TRAILS = matchMedia("(max-width: 700px)").matches ? 9000 : 18000;
+    const TRAIL_LIFE = 0.55;
+    let trails = [];
 
     // Simply-supported square Kirchhoff plate (default: steel, 400 mm, 1.0 mm).
     const PLATE = { a: 0.40, b: 0.40, h: 0.001, E: 200e9, rho: 7850, nu: 0.30 };
@@ -174,13 +177,20 @@
     }
 
     function resetParticles() {
-      particles = Array.from({ length: PARTICLE_COUNT }, () => ({
-        x: Math.random() * W,
-        y: Math.random() * H,
-        vx: 0,
-        vy: 0,
-        seed: Math.random() * 1000
-      }));
+      particles = Array.from({ length: PARTICLE_COUNT }, () => {
+        const x = Math.random() * W;
+        const y = Math.random() * H;
+        return {
+          x,
+          y,
+          px: x,
+          py: y,
+          vx: 0,
+          vy: 0,
+          seed: Math.random() * 1000
+        };
+      });
+      trails = [];
     }
 
     function setupAudio() {
@@ -245,6 +255,25 @@
       return { gx: 2*u*ux, gy: 2*u*uy, amplitude: Math.abs(u) };
     }
 
+    function addTrail(x1, y1, x2, y2, strength = 1) {
+      trails.push({
+        x1, y1, x2, y2,
+        life: TRAIL_LIFE,
+        maxLife: TRAIL_LIFE,
+        strength
+      });
+      if (trails.length > MAX_TRAILS) {
+        trails.splice(0, trails.length - MAX_TRAILS);
+      }
+    }
+
+    function updateTrails(dt) {
+      for (let i = trails.length - 1; i >= 0; i--) {
+        trails[i].life -= dt;
+        if (trails[i].life <= 0) trails.splice(i, 1);
+      }
+    }
+
     function updateParticles(dt, mode) {
       const form = gesture === "pinch" && cycleState === "ready";
       const scatter = cycleState === "collapsing";
@@ -253,6 +282,9 @@
       collapsePulse *= Math.pow(.90, dt * 60);
 
       for (const p of particles) {
+        p.px = p.x;
+        p.py = p.y;
+
         if (form) {
           const g = modeEnergyGradient(p.x, p.y, mode);
           const force = 1650 * dt;
@@ -298,11 +330,39 @@
         if (p.x > W) { p.x = W; p.vx *= -.72; }
         if (p.y < 0) { p.y = 0; p.vy *= -.72; }
         if (p.y > H) { p.y = H; p.vy *= -.72; }
+
+        const step = Math.hypot(p.x - p.px, p.y - p.py);
+        if (step > 0.08) {
+          const speed = Math.hypot(p.vx, p.vy);
+          const strength =
+            form ? 0.55 :
+            scatter ? 0.95 :
+            Math.min(0.45, 0.12 + speed * 0.05);
+
+          if (scatter || form || Math.random() < 0.28) {
+            addTrail(p.px, p.py, p.x, p.y, strength);
+          }
+        }
       }
+
+      updateTrails(dt);
     }
 
     function draw(mode, frequency) {
       ctx.clearRect(0,0,W,H);
+
+      // particle trajectories
+      ctx.globalCompositeOperation = "lighter";
+      for (const t of trails) {
+        const alpha = Math.max(0, (t.life / t.maxLife) * 0.42 * t.strength);
+        ctx.strokeStyle = `rgba(200,225,255,${alpha})`;
+        ctx.lineWidth = Math.max(0.45, particleSize * 0.55 * t.strength);
+        ctx.beginPath();
+        ctx.moveTo(t.x1, t.y1);
+        ctx.lineTo(t.x2, t.y2);
+        ctx.stroke();
+      }
+      ctx.globalCompositeOperation = "source-over";
 
       const glow = ctx.createRadialGradient(W/2,H/2,0,W/2,H/2,Math.max(W,H)*.62);
       glow.addColorStop(0, gesture === "pinch" ? "rgba(180,220,255,.08)" : "rgba(255,255,255,.025)");
