@@ -147,8 +147,8 @@
     let lastFrame = performance.now();
 
     const PARTICLE_COUNT = matchMedia("(max-width: 700px)").matches ? 4200 : 7600;
-    const MAX_TRAILS = matchMedia("(max-width: 700px)").matches ? 9000 : 18000;
-    const TRAIL_LIFE = 0.55;
+    const MAX_TRAILS = matchMedia("(max-width: 700px)").matches ? 14000 : 28000;
+    const TRAIL_LIFE = 1.35;
     let trails = [];
 
     // Simply-supported square Kirchhoff plate (default: steel, 400 mm, 1.0 mm).
