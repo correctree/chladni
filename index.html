@@ -123,6 +123,7 @@
     let collapseAngle = 0;
     let collapseStartedAt = 0;
     let cycleState = "ready";
+    let collapseArmed = true;
     const COLLAPSE_DURATION = 3000;
     let particleSize = Number(particleSizeInput.value);
     let collapsePower = Number(collapsePowerInput.value);
@@ -213,8 +214,9 @@
       collapsePulse = 0;
       collapseStartedAt = 0;
       cycleState = "ready";
+      collapseArmed = false;
       gesture = "hover";
-      previousGesture = "hover";
+      previousGesture = "open";
       smoothOpen = 0;
       smoothPinch = 1;
     }
@@ -442,9 +444,22 @@
         gesture = "hover";
       }
 
-      if (cycleState === "ready" && gesture === "open" && previousGesture !== "open") {
-        triggerCollapse();
+      // After an automatic reset, an already-open hand must not immediately
+      // start another collapse. Pinching or relaxing the hand rearms it.
+      if (!collapseArmed && (gesture === "pinch" || gesture === "hover")) {
+        collapseArmed = true;
       }
+
+      if (
+        cycleState === "ready" &&
+        collapseArmed &&
+        gesture === "open" &&
+        previousGesture !== "open"
+      ) {
+        triggerCollapse();
+        collapseArmed = false;
+      }
+
       previousGesture = gesture;
     }
 
@@ -486,6 +501,8 @@
       statusEl.textContent =
         cycleState === "collapsing"
           ? "3秒間崩壊したあと、自動的に粒子をリセットします。"
+          : !collapseArmed && gesture === "open"
+          ? "リセット完了。一度手を閉じるか、ピンチして次の図形を形成してください。"
           : gesture === "pinch"
           ? `ピンチ中：${frequency} Hzの音を再生しています。`
           : gesture === "hover"
