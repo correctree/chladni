@@ -40,8 +40,6 @@
       margin-bottom:6px; font-size:11px; opacity:.78;
     }
     input[type="range"] { width:100%; accent-color:white; }
-    .buttonRow { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:12px; }
-    .buttonRow button { margin-top:0; }
     button {
       margin-top: 12px; width: 100%; min-height: 42px; border: 0; border-radius: 12px;
       background: rgba(255,255,255,.92); color:#08090b; font-weight:700; font-size:14px;
@@ -77,17 +75,13 @@
       <input id="collapsePower" type="range" min="0.4" max="2.5" value="1.35" step="0.05">
     </div>
 
-    <button id="start">開始</button>
-    <div id="runningButtons" class="buttonRow hidden">
-      <button id="resetParticles">粒子を再配置</button>
-      <button id="restart">再起動</button>
-    </div>
+    <button id="start">カメラと音を開始</button>
   </section>
 
   <div id="help">
     手を上下：音程・振動モード<br>
     ピンチ：粒子が節線へ集まる<br>
-    手を開く：模様が崩れる
+    手を開く：3秒間崩壊→自動リセット
   </div>
 
   <script type="module">
@@ -112,9 +106,6 @@
     const particleSizeValue = document.querySelector("#particleSizeValue");
     const collapsePowerInput = document.querySelector("#collapsePower");
     const collapsePowerValue = document.querySelector("#collapsePowerValue");
-    const runningButtons = document.querySelector("#runningButtons");
-    const resetParticlesBtn = document.querySelector("#resetParticles");
-    const restartBtn = document.querySelector("#restart");
 
     let W = 0, H = 0, DPR = 1;
     let handLandmarker = null;
@@ -130,6 +121,9 @@
     let handY = .5;
     let collapsePulse = 0;
     let collapseAngle = 0;
+    let collapseStartedAt = 0;
+    let cycleState = "ready";
+    const COLLAPSE_DURATION = 3000;
     let particleSize = Number(particleSizeInput.value);
     let collapsePower = Number(collapsePowerInput.value);
     let audioCtx, oscillator, gain, filter;
@@ -206,13 +200,27 @@
     }
 
     function triggerCollapse() {
+      if (cycleState !== "ready") return;
       collapsePulse = 1;
       collapseAngle = Math.random() * Math.PI * 2;
+      collapseStartedAt = performance.now();
+      cycleState = "collapsing";
+    }
+
+    function completeCollapseCycle() {
+      resetParticles();
+      collapsePulse = 0;
+      collapseStartedAt = 0;
+      cycleState = "ready";
+      gesture = "hover";
+      previousGesture = "hover";
+      smoothOpen = 0;
+      smoothPinch = 1;
     }
 
     function updateParticles(dt, m, n) {
-      const form = gesture === "pinch";
-      const scatter = gesture === "open";
+      const form = gesture === "pinch" && cycleState === "ready";
+      const scatter = cycleState === "collapsing";
       const originX = handX * W;
       const originY = handY * H;
       collapsePulse *= Math.pow(.90, dt * 60);
@@ -302,7 +310,9 @@
       const now = audioCtx.currentTime;
       oscillator.frequency.setTargetAtTime(frequency, now, .035);
       filter.frequency.setTargetAtTime(frequency * 1.7, now, .05);
-      const targetGain = gesture === "pinch" ? .055 : gesture === "open" ? .0001 : .008;
+      const targetGain =
+        cycleState === "collapsing" ? .0001 :
+        gesture === "pinch" ? .055 : .008;
       gain.gain.setTargetAtTime(targetGain, now, gesture === "open" ? .045 : .08);
     }
 
@@ -343,7 +353,6 @@
         running = true;
         lastFrame = performance.now();
         startBtn.classList.add("hidden");
-        runningButtons.classList.remove("hidden");
         statusEl.textContent = "手を画面中央に映してください。";
         requestAnimationFrame(loop);
       } catch (err) {
@@ -375,11 +384,19 @@
       smoothPinch += (metrics.pinchRatio - smoothPinch) * .22;
       smoothOpen += (metrics.openScore - smoothOpen) * .18;
 
-      if (smoothPinch < .48) gesture = "pinch";
-      else if (smoothOpen > 2.35 && smoothPinch > .72) gesture = "open";
-      else gesture = "hover";
+      if (cycleState === "collapsing") {
+        gesture = "open";
+      } else if (smoothPinch < .48) {
+        gesture = "pinch";
+      } else if (smoothOpen > 2.35 && smoothPinch > .72) {
+        gesture = "open";
+      } else {
+        gesture = "hover";
+      }
 
-      if (gesture === "open" && previousGesture !== "open") triggerCollapse();
+      if (cycleState === "ready" && gesture === "open" && previousGesture !== "open") {
+        triggerCollapse();
+      }
       previousGesture = gesture;
     }
 
@@ -389,6 +406,10 @@
       lastFrame = now;
 
       processHand();
+
+      if (cycleState === "collapsing" && performance.now() - collapseStartedAt >= COLLAPSE_DURATION) {
+        completeCollapseCycle();
+      }
 
       const height01 = 1 - Math.min(1, Math.max(0, smoothY));
       const frequency = 110 * Math.pow(2, height01 * 3);
@@ -402,28 +423,28 @@
 
       hzEl.textContent = `${Math.round(frequency)} Hz`;
       modeEl.textContent = `mode ${m}:${n}`;
+      const collapseRemaining = cycleState === "collapsing"
+        ? Math.max(0, COLLAPSE_DURATION - (performance.now() - collapseStartedAt))
+        : 0;
+
       gestureEl.textContent =
+        cycleState === "collapsing" ? `崩壊 ${(collapseRemaining / 1000).toFixed(1)}秒` :
         gesture === "pinch" ? "形成" :
-        gesture === "open" ? "崩壊" :
-        gesture === "hover" ? "追跡" : "手を検出中";
+        gesture === "hover" ? "周波数設定" : "待機";
+
       meterFill.style.width = `${Math.round(height01 * 100)}%`;
+
       statusEl.textContent =
-        gesture === "pinch" ? "ピンチ中：粒子が節線へ集まっています。" :
-        gesture === "open" ? "開いた手：模様を崩しています。" :
-        gesture === "hover" ? "手の高さで音程を調整できます。" :
-        "手を画面中央に映してください。";
+        cycleState === "collapsing"
+          ? "3秒間崩壊したあと、自動的に粒子をリセットします。"
+          : gesture === "pinch"
+          ? "ピンチ中：粒子が節線へ集まっています。"
+          : gesture === "hover"
+          ? "手の高さで次の周波数を設定してください。"
+          : "手を画面中央に映してください。";
 
       requestAnimationFrame(loop);
     }
-
-    async function restartExperience() {
-      running = false;
-
-      if (video.srcObject) {
-        for (const track of video.srcObject.getTracks()) track.stop();
-        video.srcObject = null;
-      }
-
       if (audioCtx && audioCtx.state !== "closed") {
         await audioCtx.close();
       }
@@ -455,8 +476,6 @@
       collapsePowerValue.textContent = collapsePower.toFixed(2);
     });
 
-    resetParticlesBtn.addEventListener("click", resetParticles);
-    restartBtn.addEventListener("click", restartExperience);
     startBtn.addEventListener("click", start);
     addEventListener("resize", resize);
     resize();
