@@ -1,0 +1,656 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Chladni Hand Resonance</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; width: 100%; height: 100%; overflow: hidden;
+      background: #050608; font-family: system-ui, -apple-system, "Helvetica Neue", sans-serif;
+      touch-action: none;
+    }
+    video, canvas { position: fixed; inset: 0; width: 100%; height: 100%; }
+    video {
+      object-fit: cover; transform: scaleX(-1);
+      filter: grayscale(.25) brightness(.42) contrast(1.15) blur(1px);
+    }
+    canvas { pointer-events: none; }
+    #veil {
+      position: fixed; inset: 0; pointer-events: none;
+      background: radial-gradient(circle at center, transparent 25%, rgba(0,0,0,.46) 100%);
+    }
+    #ui {
+      position: fixed; left: 18px; top: 18px; z-index: 5;
+      width: min(330px, calc(100vw - 36px)); padding: 14px 15px;
+      border: 1px solid rgba(255,255,255,.16); border-radius: 16px;
+      background: rgba(5,7,10,.56); backdrop-filter: blur(14px);
+      box-shadow: 0 12px 45px rgba(0,0,0,.35);
+    }
+    #title { font-size: 15px; letter-spacing: .08em; font-weight: 700; }
+    #status { margin-top: 7px; font-size: 12px; line-height: 1.55; opacity: .78; }
+    #meter { margin-top: 10px; height: 4px; border-radius: 99px; overflow: hidden; background: rgba(255,255,255,.13); }
+    #meter > i { display:block; height:100%; width:0%; background: white; transition: width .08s linear; }
+    #readout { display:flex; gap:12px; margin-top:9px; font-size:11px; opacity:.74; flex-wrap:wrap; }
+    .control { margin-top: 12px; }
+    .control label {
+      display:flex; justify-content:space-between; gap:12px;
+      margin-bottom:6px; font-size:11px; opacity:.78;
+    }
+    input[type="range"] { width:100%; accent-color:white; }
+    button {
+      margin-top: 12px; width: 100%; min-height: 42px; border: 0; border-radius: 12px;
+      background: rgba(255,255,255,.92); color:#08090b; font-weight:700; font-size:14px;
+    }
+    #toggleControls {
+      margin-top: 10px;
+      min-height: 34px;
+      font-size: 12px;
+      background: rgba(255,255,255,.14);
+      color: white;
+      border: 1px solid rgba(255,255,255,.16);
+    }
+    #controlsPanel.hiddenControls { display:none; }
+    button:disabled { opacity:.55; }
+    #help {
+      position: fixed; right: 18px; bottom: 18px; z-index: 5;
+      padding: 10px 13px; border-radius: 13px; font-size: 12px; line-height: 1.6;
+      background: rgba(5,7,10,.52); border: 1px solid rgba(255,255,255,.13);
+      backdrop-filter: blur(12px); opacity:.82;
+    }
+    .hidden { display:none !important; }
+  </style>
+</head>
+<body>
+  <video id="camera" autoplay playsinline muted></video>
+  <canvas id="canvas"></canvas>
+  <div id="veil"></div>
+
+  <section id="ui">
+    <div id="title">CHLADNI PLATE RESONANCE</div>
+    <div id="status">「開始」を押し、カメラを許可してください。</div>
+    <div id="meter"><i></i></div>
+    <div id="readout"><span id="hz">— Hz</span><span id="mode">mode —</span><span id="gesture">待機</span></div>
+
+    <div id="controlsPanel">
+      <div class="control">
+        <label for="particleSize"><span>粒子サイズ</span><span id="particleSizeValue">1.2</span></label>
+        <input id="particleSize" type="range" min="0.5" max="4.0" value="1.0" step="0.1">
+      </div>
+
+      <div class="control">
+        <label for="collapsePower"><span>崩壊の強さ</span><span id="collapsePowerValue">1.0</span></label>
+        <input id="collapsePower" type="range" min="0.4" max="2.5" value="1.35" step="0.05">
+      </div>
+    </div>
+
+    <button id="toggleControls" type="button">スライダーを隠す</button>
+    <button id="start">カメラと音を開始</button>
+  </section>
+
+  <div id="help">
+    手を上下：薄板の固有モードを選択<br>
+    ピンチ：表示中の周波数を再生・図形形成<br>
+    手を開く：3秒間崩壊→自動リセット<br>ピンチ中：軌跡を保持
+  </div>
+
+  <script type="module">
+    import {
+      HandLandmarker,
+      FilesetResolver
+    } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/+esm";
+
+    const MODEL =
+      "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
+
+    const video = document.querySelector("#camera");
+    const canvas = document.querySelector("#canvas");
+    const ctx = canvas.getContext("2d", { alpha: true });
+    const startBtn = document.querySelector("#start");
+    const statusEl = document.querySelector("#status");
+    const hzEl = document.querySelector("#hz");
+    const modeEl = document.querySelector("#mode");
+    const gestureEl = document.querySelector("#gesture");
+    const meterFill = document.querySelector("#meter i");
+    const particleSizeInput = document.querySelector("#particleSize");
+    const particleSizeValue = document.querySelector("#particleSizeValue");
+    const collapsePowerInput = document.querySelector("#collapsePower");
+    const collapsePowerValue = document.querySelector("#collapsePowerValue");
+    const controlsPanel = document.querySelector("#controlsPanel");
+    const toggleControlsBtn = document.querySelector("#toggleControls");
+
+    let W = 0, H = 0, DPR = 1;
+    let handLandmarker = null;
+    let lastVideoTime = -1;
+    let running = false;
+    let particles = [];
+    let smoothY = .5;
+    let smoothPinch = 1;
+    let smoothOpen = 0;
+    let gesture = "none";
+    let previousGesture = "none";
+    let handX = .5;
+    let handY = .5;
+    let collapsePulse = 0;
+    let collapseAngle = 0;
+    let collapseStartedAt = 0;
+    let cycleState = "ready";
+    let openLatch = false;
+    let collapseTimerId = null;
+    let cycleNumber = 0;
+    const COLLAPSE_DURATION = 3000;
+    let particleSize = Number(particleSizeInput.value);
+    let collapsePower = Number(collapsePowerInput.value);
+    let audioCtx, oscillator, gain, filter;
+    let lastFrame = performance.now();
+
+    const PARTICLE_COUNT = matchMedia("(max-width: 700px)").matches ? 8400 : 15200;
+    const MAX_TRAILS = matchMedia("(max-width: 700px)").matches ? 22000 : 44000;
+    const TRAIL_LIFE = 1.35;
+    let trails = [];
+
+    // Simply-supported square Kirchhoff plate (default: steel, 400 mm, 1.0 mm).
+    const PLATE = { a: 0.40, b: 0.40, h: 0.001, E: 200e9, rho: 7850, nu: 0.30 };
+    const D = PLATE.E * Math.pow(PLATE.h, 3) / (12 * (1 - PLATE.nu * PLATE.nu));
+    const MODE_LIST = [];
+    for (let m = 1; m <= 8; m++) {
+      for (let n = m; n <= 8; n++) {
+        const omega = Math.PI * Math.PI * Math.sqrt(D / (PLATE.rho * PLATE.h)) *
+          (m * m / (PLATE.a * PLATE.a) + n * n / (PLATE.b * PLATE.b));
+        const frequency = omega / (2 * Math.PI);
+        if (frequency >= 40 && frequency <= 1600) MODE_LIST.push({ m, n, frequency });
+      }
+    }
+    MODE_LIST.sort((a, b) => a.frequency - b.frequency);
+
+    function resize() {
+      DPR = Math.min(devicePixelRatio || 1, 2);
+      W = innerWidth; H = innerHeight;
+      canvas.width = Math.round(W * DPR);
+      canvas.height = Math.round(H * DPR);
+      canvas.style.width = W + "px";
+      canvas.style.height = H + "px";
+      ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+      resetParticles();
+    }
+
+    function resetParticles() {
+      particles = Array.from({ length: PARTICLE_COUNT }, () => {
+        const x = Math.random() * W;
+        const y = Math.random() * H;
+        return {
+          x,
+          y,
+          px: x,
+          py: y,
+          vx: 0,
+          vy: 0,
+          seed: Math.random() * 1000
+        };
+      });
+      trails = [];
+    }
+
+    function setupAudio() {
+      if (audioCtx && audioCtx.state !== "closed") return;
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      oscillator = audioCtx.createOscillator();
+      gain = audioCtx.createGain();
+      filter = audioCtx.createBiquadFilter();
+      oscillator.type = "sine";
+      filter.type = "lowpass";
+      filter.Q.value = 0.7;
+      filter.frequency.value = 12000;
+      gain.gain.value = 0.0001;
+      oscillator.connect(filter).connect(gain).connect(audioCtx.destination);
+      oscillator.start();
+    }
+
+    function dist(a,b) {
+      return Math.hypot(a.x-b.x, a.y-b.y, (a.z||0)-(b.z||0));
+    }
+
+    function handMetrics(lm) {
+      const palmSize = Math.max(.0001, dist(lm[0], lm[9]));
+      const pinchRatio = dist(lm[4], lm[8]) / palmSize;
+
+      const palm = {
+        x: (lm[0].x + lm[5].x + lm[9].x + lm[13].x + lm[17].x) / 5,
+        y: (lm[0].y + lm[5].y + lm[9].y + lm[13].y + lm[17].y) / 5
+      };
+
+      const tipIds = [8,12,16,20];
+      const openScore = tipIds.reduce((sum, id) => sum + dist(lm[id], lm[0]) / palmSize, 0) / tipIds.length;
+
+      return { palm, pinchRatio, openScore };
+    }
+
+    function plateMode(x, y, mode) {
+      const X = Math.min(1, Math.max(0, x / W));
+      const Y = Math.min(1, Math.max(0, y / H));
+      const m = mode.m, n = mode.n;
+      const a = Math.sin(m * Math.PI * X) * Math.sin(n * Math.PI * Y);
+      if (m === n) return a;
+      // Degenerate square-plate modes may appear as linear combinations.
+      const b = Math.sin(n * Math.PI * X) * Math.sin(m * Math.PI * Y);
+      const mix = ((m + n) % 2 === 0) ? 0.72 : -0.72;
+      return (a + mix * b) / (1 + Math.abs(mix));
+    }
+
+    function modeEnergyGradient(x, y, mode) {
+      const X = Math.min(1, Math.max(0, x / W));
+      const Y = Math.min(1, Math.max(0, y / H));
+      const m = mode.m, n = mode.n;
+      const mix = m === n ? 0 : (((m + n) % 2 === 0) ? 0.72 : -0.72);
+      const norm = 1 + Math.abs(mix);
+      const sMX = Math.sin(m*Math.PI*X), cMX = Math.cos(m*Math.PI*X);
+      const sNX = Math.sin(n*Math.PI*X), cNX = Math.cos(n*Math.PI*X);
+      const sMY = Math.sin(m*Math.PI*Y), cMY = Math.cos(m*Math.PI*Y);
+      const sNY = Math.sin(n*Math.PI*Y), cNY = Math.cos(n*Math.PI*Y);
+      const u = (sMX*sNY + mix*sNX*sMY) / norm;
+      const ux = ((m*Math.PI/W)*cMX*sNY + mix*(n*Math.PI/W)*cNX*sMY) / norm;
+      const uy = ((n*Math.PI/H)*sMX*cNY + mix*(m*Math.PI/H)*sNX*cMY) / norm;
+      return { gx: 2*u*ux, gy: 2*u*uy, amplitude: Math.abs(u) };
+    }
+
+    function addTrail(x1, y1, x2, y2, strength = 1) {
+      trails.push({
+        x1, y1, x2, y2,
+        life: TRAIL_LIFE,
+        maxLife: TRAIL_LIFE,
+        strength
+      });
+      if (trails.length > MAX_TRAILS) {
+        trails.splice(0, trails.length - MAX_TRAILS);
+      }
+    }
+
+    function updateTrails(dt) {
+      const holdTrails = gesture === "pinch" && cycleState === "ready";
+
+      for (let i = trails.length - 1; i >= 0; i--) {
+        if (holdTrails) {
+          // Keep trajectories visible while pinching.
+          trails[i].life = trails[i].maxLife;
+        } else {
+          // After pinch ends, let them gradually fade out.
+          trails[i].life -= dt;
+          if (trails[i].life <= 0) {
+            trails.splice(i, 1);
+          }
+        }
+      }
+    }
+
+    function updateParticles(dt, mode) {
+      const form = gesture === "pinch" && cycleState === "ready";
+      const scatter = cycleState === "collapsing";
+      const originX = handX * W;
+      const originY = handY * H;
+      collapsePulse *= Math.pow(.90, dt * 60);
+
+      for (const p of particles) {
+        p.px = p.x;
+        p.py = p.y;
+
+        if (form) {
+          const g = modeEnergyGradient(p.x, p.y, mode);
+          const force = 1650 * dt;
+          p.vx += -g.gx * force;
+          p.vy += -g.gy * force;
+          // Strongly vibrating antinodes agitate grains more than nodes.
+          const agitation = 0.035 + g.amplitude * 0.12;
+          p.vx += (Math.random() - .5) * agitation;
+          p.vy += (Math.random() - .5) * agitation;
+        } else if (scatter) {
+          const dx = p.x - originX;
+          const dy = p.y - originY;
+          const len = Math.hypot(dx, dy) + 1;
+          const nx = dx / len;
+          const ny = dy / len;
+          const tx = -ny;
+          const ty = nx;
+
+          const distanceFalloff = 1 / (1 + len * .0016);
+          const wave = Math.sin(len * .035 - performance.now() * .016 + p.seed);
+          const pulse = collapsePulse * 10.5 * collapsePower * distanceFalloff;
+          const continuous = 1.6 * collapsePower * dt * 60 * distanceFalloff;
+          const swirl = (2.4 + wave * 1.7) * collapsePower * dt * 60 * distanceFalloff;
+
+          p.vx += nx * (pulse + continuous) + tx * swirl;
+          p.vy += ny * (pulse + continuous) + ty * swirl;
+          p.vx += Math.cos(collapseAngle + p.seed) * collapsePulse * 1.7 * collapsePower;
+          p.vy += Math.sin(collapseAngle + p.seed) * collapsePulse * 1.7 * collapsePower;
+          p.vx += (Math.random() - .5) * 1.1 * collapsePower;
+          p.vy += (Math.random() - .5) * 1.1 * collapsePower;
+        } else {
+          p.vx += (Math.random() - .5) * .035;
+          p.vy += (Math.random() - .5) * .035;
+        }
+
+        const damping = form ? .91 : scatter ? .982 : .965;
+        p.vx *= Math.pow(damping, dt * 60);
+        p.vy *= Math.pow(damping, dt * 60);
+        p.x += p.vx * dt * 60;
+        p.y += p.vy * dt * 60;
+
+        if (p.x < 0) { p.x = 0; p.vx *= -.72; }
+        if (p.x > W) { p.x = W; p.vx *= -.72; }
+        if (p.y < 0) { p.y = 0; p.vy *= -.72; }
+        if (p.y > H) { p.y = H; p.vy *= -.72; }
+
+        const step = Math.hypot(p.x - p.px, p.y - p.py);
+        if (step > 0.08) {
+          const speed = Math.hypot(p.vx, p.vy);
+          const strength =
+            form ? 0.55 :
+            scatter ? 0.95 :
+            Math.min(0.45, 0.12 + speed * 0.05);
+
+          if (scatter || form || Math.random() < 0.28) {
+            addTrail(p.px, p.py, p.x, p.y, strength);
+          }
+        }
+      }
+
+      updateTrails(dt);
+    }
+
+    function draw(mode, frequency) {
+      ctx.clearRect(0,0,W,H);
+
+      // particle trajectories
+      ctx.globalCompositeOperation = "lighter";
+      for (const t of trails) {
+        const alpha = Math.max(0, (t.life / t.maxLife) * 0.42 * t.strength);
+        ctx.strokeStyle = `rgba(200,225,255,${alpha})`;
+        ctx.lineWidth = Math.max(0.45, particleSize * 0.55 * t.strength);
+        ctx.beginPath();
+        ctx.moveTo(t.x1, t.y1);
+        ctx.lineTo(t.x2, t.y2);
+        ctx.stroke();
+      }
+      ctx.globalCompositeOperation = "source-over";
+
+      const glow = ctx.createRadialGradient(W/2,H/2,0,W/2,H/2,Math.max(W,H)*.62);
+      glow.addColorStop(0, gesture === "pinch" ? "rgba(180,220,255,.08)" : "rgba(255,255,255,.025)");
+      glow.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = glow;
+      ctx.fillRect(0,0,W,H);
+
+      ctx.globalCompositeOperation = "lighter";
+      const alpha = gesture === "pinch" ? .82 : .52;
+
+      for (const p of particles) {
+        const speed = Math.hypot(p.vx,p.vy);
+        const motionScale = gesture === "open" ? Math.min(2.3, 1 + speed * .04) : 1;
+        const size = particleSize * motionScale;
+        const r = Math.max(.3, size * .5);
+
+        // soft glow
+        const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * 3.4);
+        glow.addColorStop(0, `rgba(255,255,255,${alpha * 0.34})`);
+        glow.addColorStop(0.45, `rgba(210,230,255,${alpha * 0.18})`);
+        glow.addColorStop(1, "rgba(210,230,255,0)");
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r * 3.4, 0, Math.PI * 2);
+        ctx.fill();
+
+        // particle core
+        ctx.fillStyle = `rgba(245,250,255,${alpha})`;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.globalCompositeOperation = "source-over";
+
+      if (gesture !== "none") {
+        const x = handX * W;
+        const y = smoothY * H;
+        ctx.beginPath();
+        ctx.arc(x, y, 8 + (1-smoothPinch)*15 + collapsePulse * 26, 0, Math.PI*2);
+        ctx.strokeStyle = gesture === "pinch" ? "rgba(255,255,255,.9)" : "rgba(255,255,255,.28)";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+    }
+
+    function setAudio(frequency) {
+      if (!audioCtx || !oscillator || !gain) return;
+
+      const now = audioCtx.currentTime;
+      const exactFrequency = Math.max(20, Math.min(20000, frequency));
+
+      // The oscillator frequency is exactly the same value shown in the UI.
+      oscillator.frequency.setTargetAtTime(exactFrequency, now, .015);
+
+      // Sound is audible only while pinching and not during collapse.
+      const isSounding = gesture === "pinch" && cycleState === "ready";
+      const targetGain = isSounding ? .075 : .0001;
+      gain.gain.setTargetAtTime(targetGain, now, isSounding ? .018 : .035);
+    }
+
+    async function initHandTracking() {
+      if (handLandmarker) return;
+
+      statusEl.textContent = "手の認識モデルを読み込んでいます…";
+      const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+      );
+
+      const commonOptions = {
+        runningMode: "VIDEO",
+        numHands: 1,
+        minHandDetectionConfidence: .55,
+        minHandPresenceConfidence: .55,
+        minTrackingConfidence: .55
+      };
+
+      try {
+        handLandmarker = await HandLandmarker.createFromOptions(vision, {
+          ...commonOptions,
+          baseOptions: { modelAssetPath: MODEL, delegate: "GPU" }
+        });
+      } catch (gpuError) {
+        console.warn("GPU初期化に失敗したためCPUへ切り替えます。", gpuError);
+        statusEl.textContent = "CPUモードで手の認識モデルを読み込んでいます…";
+        handLandmarker = await HandLandmarker.createFromOptions(vision, {
+          ...commonOptions,
+          baseOptions: { modelAssetPath: MODEL, delegate: "CPU" }
+        });
+      }
+    }
+
+    async function start() {
+      startBtn.disabled = true;
+
+      if (!window.isSecureContext && location.hostname !== "localhost") {
+        statusEl.textContent = "カメラにはHTTPS環境が必要です。GitHub Pagesなどで開いてください。";
+        startBtn.disabled = false;
+        return;
+      }
+
+      if (!navigator.mediaDevices?.getUserMedia) {
+        statusEl.textContent = "このブラウザではカメラ機能を利用できません。SafariまたはChromeで開いてください。";
+        startBtn.disabled = false;
+        return;
+      }
+
+      try {
+        setupAudio();
+        await audioCtx.resume();
+        await initHandTracking();
+
+        statusEl.textContent = "カメラを起動しています…";
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: "user",
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          },
+          audio: false
+        });
+        video.srcObject = stream;
+        await video.play();
+
+        running = true;
+        lastFrame = performance.now();
+        startBtn.classList.add("hidden");
+        statusEl.textContent = "手を画面中央に映してください。";
+        requestAnimationFrame(loop);
+      } catch (err) {
+        console.error(err);
+
+        if (video.srcObject) {
+          for (const track of video.srcObject.getTracks()) track.stop();
+          video.srcObject = null;
+        }
+
+        const name = err?.name || "";
+        statusEl.textContent =
+          name === "NotAllowedError"
+            ? "カメラが許可されていません。ブラウザのサイト設定でカメラを許可してください。"
+            : name === "NotFoundError"
+            ? "利用できるカメラが見つかりません。"
+            : name === "NotReadableError"
+            ? "カメラが別のアプリで使用中の可能性があります。"
+            : "起動できませんでした。HTTPS、通信状態、カメラ設定を確認してください。";
+
+        startBtn.disabled = false;
+        startBtn.textContent = "再試行";
+      }
+    }
+
+    function processHand() {
+      if (!handLandmarker || video.readyState < 2) return;
+      if (video.currentTime === lastVideoTime) return;
+      lastVideoTime = video.currentTime;
+
+      let result;
+      try {
+        result = handLandmarker.detectForVideo(video, performance.now());
+      } catch (error) {
+        console.warn("Hand detection frame skipped:", error);
+        return;
+      }
+
+      if (!result.landmarks?.length) {
+        gesture = "none";
+        smoothOpen *= .9;
+        smoothPinch += (1 - smoothPinch) * .12;
+        return;
+      }
+
+      const metrics = handMetrics(result.landmarks[0]);
+      handX += ((1 - metrics.palm.x) - handX) * .18;
+      handY += (metrics.palm.y - handY) * .18;
+      smoothY += (metrics.palm.y - smoothY) * .16;
+      smoothPinch += (metrics.pinchRatio - smoothPinch) * .22;
+      smoothOpen += (metrics.openScore - smoothOpen) * .18;
+
+      if (cycleState === "collapsing") {
+        gesture = "open";
+      } else if (smoothPinch < .52) {
+        gesture = "pinch";
+      } else if (smoothOpen > 2.35 && smoothPinch > .72) {
+        gesture = "open";
+      } else {
+        gesture = "hover";
+      }
+
+      // A pinch is always accepted immediately after reset.
+      // Hover also clears the open-hand latch.
+      if (cycleState === "ready" && (gesture === "pinch" || gesture === "hover")) {
+        openLatch = false;
+      }
+
+      // Collapse starts only on a fresh open-hand transition.
+      if (
+        cycleState === "ready" &&
+        !openLatch &&
+        gesture === "open" &&
+        previousGesture !== "open"
+      ) {
+        triggerCollapse();
+      }
+
+      previousGesture = gesture;
+    }
+
+    function loop(now) {
+      if (!running) return;
+      const dt = Math.min(.033, Math.max(.001, (now - lastFrame) / 1000));
+      lastFrame = now;
+
+      processHand();
+
+      // Secondary safeguard in case the browser delayed or discarded the timer.
+      if (
+        cycleState === "collapsing" &&
+        collapseStartedAt > 0 &&
+        performance.now() - collapseStartedAt >= COLLAPSE_DURATION + 150
+      ) {
+        completeCollapseCycle();
+      }
+
+      const height01 = 1 - Math.min(1, Math.max(0, smoothY));
+      const modeIndex = Math.min(MODE_LIST.length - 1, Math.floor(height01 * MODE_LIST.length));
+      const mode = MODE_LIST[modeIndex];
+      const frequency = Math.round(mode.frequency);
+
+      updateParticles(dt, mode);
+      draw(mode, frequency);
+      setAudio(frequency);
+
+      hzEl.textContent = `${frequency} Hz`;
+      modeEl.textContent = `mode ${mode.m}:${mode.n}`;
+      const collapseRemaining = cycleState === "collapsing"
+        ? Math.max(0, COLLAPSE_DURATION - (performance.now() - collapseStartedAt))
+        : 0;
+
+      gestureEl.textContent =
+        cycleState === "collapsing" ? `崩壊 ${(collapseRemaining / 1000).toFixed(1)}秒` :
+        gesture === "pinch" ? "形成" :
+        gesture === "hover" ? "周波数設定" : "待機";
+
+      meterFill.style.width = `${Math.round(height01 * 100)}%`;
+
+      statusEl.textContent =
+        cycleState === "collapsing"
+          ? "3秒間崩壊したあと、自動的に粒子をリセットします。"
+          : cycleState === "ready" && openLatch && gesture === "open"
+          ? "リセット完了。ピンチするか、一度手を緩めて次の操作を始めてください。"
+          : gesture === "pinch"
+          ? `ピンチ中：${frequency} Hzの音を再生しています。`
+          : gesture === "hover"
+          ? "手の高さで次の周波数を設定してください。"
+          : "手を画面中央に映してください。";
+
+      requestAnimationFrame(loop);
+    }
+
+    particleSizeInput.addEventListener("input", () => {
+      particleSize = Number(particleSizeInput.value);
+      particleSizeValue.textContent = particleSize.toFixed(1);
+    });
+
+    collapsePowerInput.addEventListener("input", () => {
+      collapsePower = Number(collapsePowerInput.value);
+      collapsePowerValue.textContent = collapsePower.toFixed(2);
+    });
+
+    toggleControlsBtn.addEventListener("click", () => {
+      const hidden = controlsPanel.classList.toggle("hiddenControls");
+      toggleControlsBtn.textContent = hidden ? "スライダーを表示" : "スライダーを隠す";
+    });
+
+    startBtn.addEventListener("click", start);
+    addEventListener("resize", resize);
+    resize();
+  </script>
+</body>
+</html>
