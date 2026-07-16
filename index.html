@@ -44,6 +44,15 @@
       margin-top: 12px; width: 100%; min-height: 42px; border: 0; border-radius: 12px;
       background: rgba(255,255,255,.92); color:#08090b; font-weight:700; font-size:14px;
     }
+    #toggleControls {
+      margin-top: 10px;
+      min-height: 34px;
+      font-size: 12px;
+      background: rgba(255,255,255,.14);
+      color: white;
+      border: 1px solid rgba(255,255,255,.16);
+    }
+    #controlsPanel.hiddenControls { display:none; }
     button:disabled { opacity:.55; }
     #help {
       position: fixed; right: 18px; bottom: 18px; z-index: 5;
@@ -65,16 +74,19 @@
     <div id="meter"><i></i></div>
     <div id="readout"><span id="hz">— Hz</span><span id="mode">mode —</span><span id="gesture">待機</span></div>
 
-    <div class="control">
-      <label for="particleSize"><span>粒子サイズ</span><span id="particleSizeValue">1.2</span></label>
-      <input id="particleSize" type="range" min="0.5" max="4.0" value="1.2" step="0.1">
+    <div id="controlsPanel">
+      <div class="control">
+        <label for="particleSize"><span>粒子サイズ</span><span id="particleSizeValue">1.2</span></label>
+        <input id="particleSize" type="range" min="0.5" max="4.0" value="1.2" step="0.1">
+      </div>
+
+      <div class="control">
+        <label for="collapsePower"><span>崩壊の強さ</span><span id="collapsePowerValue">1.0</span></label>
+        <input id="collapsePower" type="range" min="0.4" max="2.5" value="1.35" step="0.05">
+      </div>
     </div>
 
-    <div class="control">
-      <label for="collapsePower"><span>崩壊の強さ</span><span id="collapsePowerValue">1.0</span></label>
-      <input id="collapsePower" type="range" min="0.4" max="2.5" value="1.35" step="0.05">
-    </div>
-
+    <button id="toggleControls" type="button">スライダーを隠す</button>
     <button id="start">カメラと音を開始</button>
   </section>
 
@@ -106,6 +118,8 @@
     const particleSizeValue = document.querySelector("#particleSizeValue");
     const collapsePowerInput = document.querySelector("#collapsePower");
     const collapsePowerValue = document.querySelector("#collapsePowerValue");
+    const controlsPanel = document.querySelector("#controlsPanel");
+    const toggleControlsBtn = document.querySelector("#toggleControls");
 
     let W = 0, H = 0, DPR = 1;
     let handLandmarker = null;
@@ -559,6 +573,11 @@
     collapsePowerInput.addEventListener("input", () => {
       collapsePower = Number(collapsePowerInput.value);
       collapsePowerValue.textContent = collapsePower.toFixed(2);
+    });
+
+    toggleControlsBtn.addEventListener("click", () => {
+      const hidden = controlsPanel.classList.toggle("hiddenControls");
+      toggleControlsBtn.textContent = hidden ? "スライダーを表示" : "スライダーを隠す";
     });
 
     startBtn.addEventListener("click", start);
