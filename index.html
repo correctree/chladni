@@ -123,7 +123,9 @@
     let collapseAngle = 0;
     let collapseStartedAt = 0;
     let cycleState = "ready";
-    let collapseArmed = true;
+    let openLatch = false;
+    let collapseTimerId = null;
+    let cycleNumber = 0;
     const COLLAPSE_DURATION = 3000;
     let particleSize = Number(particleSizeInput.value);
     let collapsePower = Number(collapsePowerInput.value);
@@ -147,8 +149,8 @@
       particles = Array.from({ length: PARTICLE_COUNT }, () => ({
         x: Math.random() * W,
         y: Math.random() * H,
-        vx: (Math.random() - .5) * .25,
-        vy: (Math.random() - .5) * .25,
+        vx: 0,
+        vy: 0,
         seed: Math.random() * 1000
       }));
     }
@@ -203,22 +205,47 @@
 
     function triggerCollapse() {
       if (cycleState !== "ready") return;
+
+      cycleState = "collapsing";
       collapsePulse = 1;
       collapseAngle = Math.random() * Math.PI * 2;
       collapseStartedAt = performance.now();
-      cycleState = "collapsing";
+      openLatch = true;
+
+      const thisCycle = ++cycleNumber;
+
+      if (collapseTimerId !== null) {
+        clearTimeout(collapseTimerId);
+      }
+
+      // This timer is independent from camera frames and MediaPipe detection.
+      collapseTimerId = window.setTimeout(() => {
+        if (thisCycle === cycleNumber && cycleState === "collapsing") {
+          completeCollapseCycle();
+        }
+      }, COLLAPSE_DURATION);
     }
 
     function completeCollapseCycle() {
+      if (collapseTimerId !== null) {
+        clearTimeout(collapseTimerId);
+        collapseTimerId = null;
+      }
+
       resetParticles();
       collapsePulse = 0;
       collapseStartedAt = 0;
+      collapseAngle = 0;
       cycleState = "ready";
-      collapseArmed = false;
+
+      // Return to the same neutral random-particle state as initial launch.
+      openLatch = true;
       gesture = "hover";
       previousGesture = "open";
       smoothOpen = 0;
       smoothPinch = 1;
+
+      statusEl.textContent = "リセット完了。粒子は最初のランダムな状態に戻りました。";
     }
 
     function updateParticles(dt, m, n) {
@@ -419,7 +446,14 @@
       if (video.currentTime === lastVideoTime) return;
       lastVideoTime = video.currentTime;
 
-      const result = handLandmarker.detectForVideo(video, performance.now());
+      let result;
+      try {
+        result = handLandmarker.detectForVideo(video, performance.now());
+      } catch (error) {
+        console.warn("Hand detection frame skipped:", error);
+        return;
+      }
+
       if (!result.landmarks?.length) {
         gesture = "none";
         smoothOpen *= .9;
@@ -436,7 +470,7 @@
 
       if (cycleState === "collapsing") {
         gesture = "open";
-      } else if (smoothPinch < .48) {
+      } else if (smoothPinch < .52) {
         gesture = "pinch";
       } else if (smoothOpen > 2.35 && smoothPinch > .72) {
         gesture = "open";
@@ -444,20 +478,20 @@
         gesture = "hover";
       }
 
-      // After an automatic reset, an already-open hand must not immediately
-      // start another collapse. Pinching or relaxing the hand rearms it.
-      if (!collapseArmed && (gesture === "pinch" || gesture === "hover")) {
-        collapseArmed = true;
+      // A pinch is always accepted immediately after reset.
+      // Hover also clears the open-hand latch.
+      if (cycleState === "ready" && (gesture === "pinch" || gesture === "hover")) {
+        openLatch = false;
       }
 
+      // Collapse starts only on a fresh open-hand transition.
       if (
         cycleState === "ready" &&
-        collapseArmed &&
+        !openLatch &&
         gesture === "open" &&
         previousGesture !== "open"
       ) {
         triggerCollapse();
-        collapseArmed = false;
       }
 
       previousGesture = gesture;
@@ -470,7 +504,12 @@
 
       processHand();
 
-      if (cycleState === "collapsing" && performance.now() - collapseStartedAt >= COLLAPSE_DURATION) {
+      // Secondary safeguard in case the browser delayed or discarded the timer.
+      if (
+        cycleState === "collapsing" &&
+        collapseStartedAt > 0 &&
+        performance.now() - collapseStartedAt >= COLLAPSE_DURATION + 150
+      ) {
         completeCollapseCycle();
       }
 
@@ -501,8 +540,8 @@
       statusEl.textContent =
         cycleState === "collapsing"
           ? "3秒間崩壊したあと、自動的に粒子をリセットします。"
-          : !collapseArmed && gesture === "open"
-          ? "リセット完了。一度手を閉じるか、ピンチして次の図形を形成してください。"
+          : cycleState === "ready" && openLatch && gesture === "open"
+          ? "リセット完了。ピンチするか、一度手を緩めて次の操作を始めてください。"
           : gesture === "pinch"
           ? `ピンチ中：${frequency} Hzの音を再生しています。`
           : gesture === "hover"
