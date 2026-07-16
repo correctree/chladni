@@ -317,22 +317,51 @@
     }
 
     async function initHandTracking() {
+      if (handLandmarker) return;
+
       statusEl.textContent = "手の認識モデルを読み込んでいます…";
       const vision = await FilesetResolver.forVisionTasks(
         "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
       );
-      handLandmarker = await HandLandmarker.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: MODEL, delegate: "GPU" },
+
+      const commonOptions = {
         runningMode: "VIDEO",
         numHands: 1,
         minHandDetectionConfidence: .55,
         minHandPresenceConfidence: .55,
         minTrackingConfidence: .55
-      });
+      };
+
+      try {
+        handLandmarker = await HandLandmarker.createFromOptions(vision, {
+          ...commonOptions,
+          baseOptions: { modelAssetPath: MODEL, delegate: "GPU" }
+        });
+      } catch (gpuError) {
+        console.warn("GPU初期化に失敗したためCPUへ切り替えます。", gpuError);
+        statusEl.textContent = "CPUモードで手の認識モデルを読み込んでいます…";
+        handLandmarker = await HandLandmarker.createFromOptions(vision, {
+          ...commonOptions,
+          baseOptions: { modelAssetPath: MODEL, delegate: "CPU" }
+        });
+      }
     }
 
     async function start() {
       startBtn.disabled = true;
+
+      if (!window.isSecureContext && location.hostname !== "localhost") {
+        statusEl.textContent = "カメラにはHTTPS環境が必要です。GitHub Pagesなどで開いてください。";
+        startBtn.disabled = false;
+        return;
+      }
+
+      if (!navigator.mediaDevices?.getUserMedia) {
+        statusEl.textContent = "このブラウザではカメラ機能を利用できません。SafariまたはChromeで開いてください。";
+        startBtn.disabled = false;
+        return;
+      }
+
       try {
         setupAudio();
         await audioCtx.resume();
@@ -357,8 +386,22 @@
         requestAnimationFrame(loop);
       } catch (err) {
         console.error(err);
+
+        if (video.srcObject) {
+          for (const track of video.srcObject.getTracks()) track.stop();
+          video.srcObject = null;
+        }
+
+        const name = err?.name || "";
         statusEl.textContent =
-          "起動できませんでした。HTTPS環境、カメラ許可、通信状態を確認してください。";
+          name === "NotAllowedError"
+            ? "カメラが許可されていません。ブラウザのサイト設定でカメラを許可してください。"
+            : name === "NotFoundError"
+            ? "利用できるカメラが見つかりません。"
+            : name === "NotReadableError"
+            ? "カメラが別のアプリで使用中の可能性があります。"
+            : "起動できませんでした。HTTPS、通信状態、カメラ設定を確認してください。";
+
         startBtn.disabled = false;
         startBtn.textContent = "再試行";
       }
@@ -444,26 +487,6 @@
           : "手を画面中央に映してください。";
 
       requestAnimationFrame(loop);
-    }
-      if (audioCtx && audioCtx.state !== "closed") {
-        await audioCtx.close();
-      }
-
-      audioCtx = oscillator = gain = filter = null;
-      lastVideoTime = -1;
-      gesture = previousGesture = "none";
-      smoothPinch = 1;
-      smoothOpen = 0;
-      smoothY = .5;
-      handX = handY = .5;
-      collapsePulse = 0;
-      resetParticles();
-
-      runningButtons.classList.add("hidden");
-      startBtn.classList.remove("hidden");
-      startBtn.disabled = false;
-      startBtn.textContent = "再生";
-      statusEl.textContent = "「再生」を押すと、もう一度カメラと音を開始します。";
     }
 
     particleSizeInput.addEventListener("input", () => {
