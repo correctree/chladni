@@ -77,7 +77,7 @@
     <div id="controlsPanel">
       <div class="control">
         <label for="particleSize"><span>粒子サイズ</span><span id="particleSizeValue">1.2</span></label>
-        <input id="particleSize" type="range" min="0.5" max="4.0" value="1.2" step="0.1">
+        <input id="particleSize" type="range" min="0.5" max="4.0" value="1.0" step="0.1">
       </div>
 
       <div class="control">
@@ -146,7 +146,7 @@
     let audioCtx, oscillator, gain, filter;
     let lastFrame = performance.now();
 
-    const PARTICLE_COUNT = matchMedia("(max-width: 700px)").matches ? 2600 : 4800;
+    const PARTICLE_COUNT = matchMedia("(max-width: 700px)").matches ? 4200 : 7600;
 
     // Simply-supported square Kirchhoff plate (default: steel, 400 mm, 1.0 mm).
     const PLATE = { a: 0.40, b: 0.40, h: 0.001, E: 200e9, rho: 7850, nu: 0.30 };
@@ -311,16 +311,31 @@
       ctx.fillRect(0,0,W,H);
 
       ctx.globalCompositeOperation = "lighter";
-      const alpha = gesture === "pinch" ? .72 : .46;
-      ctx.fillStyle = `rgba(235,245,255,${alpha})`;
+      const alpha = gesture === "pinch" ? .82 : .52;
+
       for (const p of particles) {
         const speed = Math.hypot(p.vx,p.vy);
-        const motionScale = gesture === "open" ? Math.min(2.2, 1 + speed * .035) : 1;
+        const motionScale = gesture === "open" ? Math.min(2.3, 1 + speed * .04) : 1;
         const size = particleSize * motionScale;
+        const r = Math.max(.3, size * .5);
+
+        // soft glow
+        const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * 3.4);
+        glow.addColorStop(0, `rgba(255,255,255,${alpha * 0.34})`);
+        glow.addColorStop(0.45, `rgba(210,230,255,${alpha * 0.18})`);
+        glow.addColorStop(1, "rgba(210,230,255,0)");
+        ctx.fillStyle = glow;
         ctx.beginPath();
-        ctx.arc(p.x, p.y, Math.max(.25, size * .5), 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, r * 3.4, 0, Math.PI * 2);
+        ctx.fill();
+
+        // particle core
+        ctx.fillStyle = `rgba(245,250,255,${alpha})`;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
         ctx.fill();
       }
+
       ctx.globalCompositeOperation = "source-over";
 
       if (gesture !== "none") {
